@@ -1,16 +1,30 @@
 package main
 
 import (
+	"database/sql"
+	"github.com/dastardlyjockey/rssagg/internal/database"
 	"github.com/go-chi/chi"
 	"github.com/joho/godotenv"
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/go-chi/cors"
+
+	_ "github.com/lib/pq"
 )
 
+type apiConfig struct {
+	DB *database.Queries
+}
+
 func main() {
+	//feed, err := urlToFeed("https://wagslane.dev/index.xml")
+	//if err != nil {
+	//	log.Fatal(err)
+	//}
+	//fmt.Println(feed)
 
 	godotenv.Load()
 
@@ -18,6 +32,23 @@ func main() {
 	if portString == "" {
 		log.Fatal("PORT is not found in the environment")
 	}
+
+	dbURL := os.Getenv("DB_URL")
+	if dbURL == "" {
+		log.Fatal("DB_URL is not found in the environment")
+	}
+
+	connection, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		log.Fatal("Can't connect to database:", err)
+	}
+
+	db := database.New(connection)
+	apiCfg := apiConfig{
+		DB: db,
+	}
+
+	go startScraping(db, 10, time.Minute)
 
 	router := chi.NewRouter()
 
@@ -31,8 +62,23 @@ func main() {
 	}))
 
 	v1Router := chi.NewRouter()
+
+	//USERS
 	v1Router.Get("/healthz", handlerReadiness)
 	v1Router.Get("/error", handlerError)
+	v1Router.Post("/users", apiCfg.handlerCreateUser)
+	v1Router.Get("/users", apiCfg.middlewareAuth(apiCfg.handlerGetUser))
+
+	//FEEDS
+	v1Router.Post("/feeds", apiCfg.middlewareAuth(apiCfg.handlerCreateFeed))
+	v1Router.Get("/feeds", apiCfg.handlerGetFeeds)
+	v1Router.Post("/feed_follows", apiCfg.middlewareAuth(apiCfg.handlerCreateFeedFollows))
+	v1Router.Get("/user_feed_follows", apiCfg.middlewareAuth(apiCfg.handlerGetFeedFollow))
+	v1Router.Delete("/user_feed_follows/{feedFollowID}", apiCfg.middlewareAuth(apiCfg.handlerDeleteFeedFollow))
+
+	//POSTS
+	v1Router.Get("/posts", apiCfg.middlewareAuth(apiCfg.handlerGetUserPosts))
+
 	router.Mount("/v1", v1Router)
 
 	srv := &http.Server{
@@ -45,7 +91,7 @@ func main() {
 	/* The method will keep running until the port is reached and the server is stopped properly before returning
 	from the handler function call to the handler function itself and returning immediately to the caller function call
 	*/
-	err := srv.ListenAndServe()
+	err = srv.ListenAndServe()
 	if err != nil {
 		log.Fatal(err)
 	}
